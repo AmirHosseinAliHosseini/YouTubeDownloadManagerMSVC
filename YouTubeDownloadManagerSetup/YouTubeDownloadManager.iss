@@ -1,10 +1,10 @@
 
 [Setup]
 AppName=YouTube Download Manager
-AppVersion=1.2
+AppVersion=1.3
 DefaultDirName={pf}\YouTubeDownloadManager
 DefaultGroupName=YouTube Download Manager
-OutputBaseFilename=YouTubeDownloadManagerInstaller V1.2
+OutputBaseFilename=YouTubeDownloadManagerInstaller V1.3
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
