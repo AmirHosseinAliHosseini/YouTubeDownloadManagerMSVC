@@ -158,7 +158,7 @@ int main(int argc, char *argv[])
 
     //--------------------Left Menu--------------------
 
-    QPushButton *btnAdd = new QPushButton("Add to Queue");
+    QPushButton *btnAdd = new QPushButton("Add to List");
     btnAdd->setEnabled(false);
     left->addWidget(btnAdd);
 
