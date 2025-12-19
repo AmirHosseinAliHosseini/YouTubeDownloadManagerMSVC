@@ -1,8 +1,11 @@
 QT += core gui widgets network
 CONFIG += c++17 thread
 
-SOURCES += main.cpp
+SOURCES += main.cpp \
+    DownloadItemWidget.cpp
 HEADERS += \
+    DownloadItem.h \
+    DownloadItemWidget.h \
     ProgressRing.h
 
 PYDIR = "C:/Program Files/Python313"
