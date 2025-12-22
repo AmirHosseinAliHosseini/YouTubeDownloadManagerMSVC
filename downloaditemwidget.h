@@ -21,6 +21,8 @@ public:
     QLabel *lblStatus;
     QPushButton *btnStart;
     QPushButton *btnRemove;
+    QPushButton *btnPlay;
+    QPushButton *btnOpenFolder;
     QProgressBar *progress;
     QProcess *proc = nullptr;
     bool isDownloading = false;

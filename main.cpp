@@ -52,12 +52,186 @@ QString generateUniqueFileName(const QString &folder, const QString &baseName)
     return baseName;
 }
 
+QString queueFilePath() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/queue.json";
+}
+
+void saveQueue(QListWidget *queue) {
+    QJsonArray arr;
+
+    for (int i = 0; i < queue->count(); ++i) {
+        auto *w = qobject_cast<DownloadItemWidget*>(
+            queue->itemWidget(queue->item(i))
+            );
+        if (!w) continue;
+
+        arr.append(w->downloadItem.toJson());
+    }
+
+    QFile f(queueFilePath());
+    QDir().mkpath(QFileInfo(f).absolutePath());
+
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
+    }
+}
+
+void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString saveFolder) {
+    QObject::connect(widget, &DownloadItemWidget::removeRequested,
+                     [=](DownloadItemWidget *wItem) {
+                         auto reply = QMessageBox::question(wItem, "Remove item",
+                                                            "Are you sure you want to remove this item?", QMessageBox::Yes | QMessageBox::No);
+                         if (reply != QMessageBox::Yes) return;
+
+                         auto *opacity = new QGraphicsOpacityEffect(wItem);
+                         wItem->setGraphicsEffect(opacity);
+
+                         auto *fade = new QPropertyAnimation(opacity, "opacity");
+                         fade->setDuration(200);
+                         fade->setStartValue(1.0);
+                         fade->setEndValue(0.0);
+
+                         QObject::connect(fade, &QPropertyAnimation::finished, [=]() {
+                             if (wItem->proc && wItem->proc->state() == QProcess::Running)
+                                 wItem->proc->kill();
+
+                             for (int i = 0; i < queue->count(); ++i) {
+                                 if (queue->itemWidget(queue->item(i)) == wItem) {
+                                     delete queue->takeItem(i);
+                                     break;
+                                 }
+                             }
+                         });
+
+                         fade->start(QAbstractAnimation::DeleteWhenStopped);
+                     });
+
+    QObject::connect(widget, &DownloadItemWidget::startRequested, [=](DownloadItemWidget *wItem) {
+        if (!wItem->isDownloading) {
+            wItem->lblStatus->setText("Starting download...");
+            wItem->progress->setRange(0, 0);
+            wItem->progress->show();
+            wItem->currentType = "Video";
+            wItem->proc = new QProcess(wItem);
+            wItem->proc->setProcessChannelMode(QProcess::MergedChannels);
+
+            QObject::connect(wItem->proc, &QProcess::readyReadStandardOutput, [wItem]() {
+                if (!wItem->proc) return;
+
+                QByteArray output = wItem->proc->readAllStandardOutput();
+                QStringList lines = QString(output).split("\n", Qt::SkipEmptyParts);
+
+                for (QString &line : lines) {
+                    QJsonParseError err;
+                    QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8(), &err);
+
+                    if (err.error == QJsonParseError::NoError && doc.isObject()) {
+                        QJsonObject obj = doc.object();
+                        QString status = obj.value("status").toString();
+                        if (!status.isEmpty())
+                            wItem->lblStatus->setText(status + " - " + obj.value("downloaded_bytes").toVariant().toString());
+
+                    } else {
+                        if (line.contains("download") && line.contains("ETA"))
+                            wItem->parseYtDlpStatus(line);
+                        else if (line.contains("Destination") && line.contains(".mp4"))
+                            wItem->currentType = "Video";
+                        else if (line.contains("Destination"))
+                            wItem->currentType = "Audio";
+                        else if (line.contains("Merger"))
+                        {
+                            wItem->progress->setRange(0, 0);
+                            wItem->btnStart->setEnabled(false);
+                            wItem->lblStatus->setText("Merging Video & Audio ...");
+                        }
+                    }
+                }
+            });
+
+            QObject::connect(wItem->proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                             [wItem, queue](int exitCode, QProcess::ExitStatus status) {
+                                 if (exitCode == 0) {
+                                     wItem->progress->setRange(0, 100);
+                                     wItem->progress->setValue(100);
+                                     wItem->setFinished();
+                                     wItem->btnStart->setEnabled(false);
+                                 }
+                                 else
+                                     wItem->lblStatus->setText("Stopped");
+
+                                 wItem->proc->deleteLater();
+                                 wItem->proc = nullptr;
+                                 saveQueue(queue);
+                             });
+
+            QString outputName = QString("%1 [%2]").arg(sanitizeFileName(wItem->downloadItem.title)).arg(wItem->downloadItem.resolution);
+            QString outputPath = QString("%1/%2").arg(saveFolder).arg(generateUniqueFileName(wItem->downloadItem.saveFolder, outputName));
+            wItem->downloadItem.finalFilePath = outputPath + ".mp4";
+
+            QString program = QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
+            QStringList args;
+            args << "--ffmpeg-location" << QCoreApplication::applicationDirPath()
+                << "--newline"
+                << "-c"
+                << "-f"  << QString("%1+%2/%1").arg(wItem->downloadItem.videoFormat, wItem->downloadItem.audioFormat)
+                << "--merge-output-format" << "mp4"
+                << "-o" << outputPath
+                << wItem->downloadItem.url;
+
+            wItem->proc->start(program, args);
+            wItem->isDownloading = true;
+            wItem->btnStart->setText("■");
+            wItem->btnStart->setToolTip("Stop download");
+        }
+        else
+        {
+            if (wItem->proc && wItem->proc->state() == QProcess::Running)
+                wItem->proc->kill();
+
+            wItem->progress->hide();
+            wItem->isDownloading = false;
+            wItem->btnStart->setText("▶");
+            wItem->btnStart->setToolTip("Resume download");
+        }
+    });
+}
+
+void loadQueue(QListWidget *queue) {
+    QFile f(queueFilePath());
+    if (!f.open(QIODevice::ReadOnly)) return;
+
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    if (!doc.isArray()) return;
+
+    for (auto v : doc.array()) {
+        DownloadItem item = DownloadItem::fromJson(v.toObject());
+
+        auto *widget = new DownloadItemWidget(item);
+        connectDownloadItem(widget, queue, item.saveFolder);
+
+        QListWidgetItem *li = new QListWidgetItem(queue);
+        li->setSizeHint(QSize(500, 90));
+        queue->setItemWidget(li, widget);
+
+        if (!item.thumbPath.isEmpty() && QFile::exists(item.thumbPath)) {
+            QPixmap pix(item.thumbPath);
+            widget->lblThumb->setPixmap(
+                pix.scaled(widget->lblThumb->size(),
+                           Qt::KeepAspectRatio,
+                           Qt::SmoothTransformation)
+                );
+        } else {
+            //widget->lblThumb->setPixmap(QPixmap(":/icons/no_thumb.png"));
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     app.setWindowIcon(QIcon(":/icons/appicon.png"));
     QWidget w;
-    w.setWindowTitle("YouTube Download Manager V1.4");
+    w.setWindowTitle("YouTube Download Manager V1.5");
     w.setFixedSize(1050, 600);
 
     //--------------------Parameters--------------------
@@ -65,6 +239,7 @@ int main(int argc, char *argv[])
     QString saveFolder = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QString realExt, realTitle;
     QPixmap currentThumb;
+    QString currentThumbPath;
     QString outputPath;
     QNetworkAccessManager *networkManager = new QNetworkAccessManager(&w);
 
@@ -76,6 +251,7 @@ int main(int argc, char *argv[])
     mainLayout->addWidget(leftWidget);
 
     QListWidget *queue = new QListWidget();
+    loadQueue(queue);
     mainLayout->addWidget(queue, 1);
 
     leftWidget->setFixedSize(475,600);
@@ -198,7 +374,7 @@ int main(int argc, char *argv[])
         QProcess *proc = new QProcess(&w);
         proc->setProcessChannelMode(QProcess::MergedChannels);
 
-        QObject::connect(proc, &QProcess::readyReadStandardOutput, [=, &realTitle, &realExt, &currentThumb]() {
+        QObject::connect(proc, &QProcess::readyReadStandardOutput, [=, &realTitle, &realExt, &currentThumb, &currentThumbPath]() {
             QByteArray output = proc->readAllStandardOutput();
             QJsonParseError err;
             QJsonDocument doc = QJsonDocument::fromJson(output, &err);
@@ -289,13 +465,26 @@ int main(int argc, char *argv[])
                     QString fileName = QFileInfo(QUrl(bestUrlThumbnails).fileName()).completeBaseName();
                     QNetworkReply *reply = networkManager->get(request);
 
-                    QObject::connect(reply, &QNetworkReply::finished, [reply, lblStoryboard, &currentThumb]() {
+                    QObject::connect(reply, &QNetworkReply::finished, [reply, lblStoryboard, realTitle,
+                                                                       &currentThumb, &currentThumbPath]() {
                         QByteArray data = reply->readAll();
                         QPixmap pix;
                         if (pix.loadFromData(data)) {
                             currentThumb = pix;
                             lblStoryboard->setPixmap(pix.scaled(lblStoryboard->size(),
                                                                 Qt::KeepAspectRatio, Qt::SmoothTransformation));
+
+                            QString thumbDir = QStandardPaths::writableLocation(
+                                                   QStandardPaths::AppDataLocation
+                                                   ) + "/thumbs";
+
+                            QDir().mkpath(thumbDir);
+
+                            QString thumbFile = thumbDir + "/" +
+                                                sanitizeFileName(realTitle) + ".jpg";
+
+                            pix.save(thumbFile, "JPG");
+                            currentThumbPath = thumbFile;
                         }
                         reply->deleteLater();
                     });
@@ -329,12 +518,12 @@ int main(int argc, char *argv[])
                              btnCheck->setEnabled(true);
                          });
 
+        QString program = QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
         QStringList args;
-        args << "-m" << "yt_dlp"
-             << "--dump-json"
+        args << "--dump-json"
              << urlEdit->text();
 
-        proc->start("python", args);
+        proc->start(program, args);
     });
 
     QObject::connect(btnAdd, &QPushButton::clicked, [&]() {
@@ -352,6 +541,7 @@ int main(int argc, char *argv[])
         item.audioFormat = audioCombo->currentData().toString();
         item.baseName = baseName;
         item.saveFolder = saveFolder;
+        item.thumbPath = currentThumbPath;
         item.hasPartialFile();
 
         resolution = videoCombo->currentText();
@@ -361,128 +551,15 @@ int main(int argc, char *argv[])
             resolution = resolution.split(" ").first();
 
         auto *widget = new DownloadItemWidget(item);
+        connectDownloadItem(widget, queue, saveFolder);
         widget->lblThumb->setPixmap(currentThumb.scaled(widget->lblThumb->size(),
                                                         Qt::KeepAspectRatio, Qt::SmoothTransformation));
-
-        QObject::connect(widget, &DownloadItemWidget::removeRequested,
-                         [=](DownloadItemWidget *wItem) {
-                             auto reply = QMessageBox::question(wItem, "Remove item",
-                                                                "Are you sure you want to remove this item?", QMessageBox::Yes | QMessageBox::No);
-                             if (reply != QMessageBox::Yes) return;
-
-                             auto *opacity = new QGraphicsOpacityEffect(wItem);
-                             wItem->setGraphicsEffect(opacity);
-
-                             auto *fade = new QPropertyAnimation(opacity, "opacity");
-                             fade->setDuration(200);
-                             fade->setStartValue(1.0);
-                             fade->setEndValue(0.0);
-
-                             QObject::connect(fade, &QPropertyAnimation::finished, [=]() {
-                                 if (wItem->proc && wItem->proc->state() == QProcess::Running)
-                                     wItem->proc->kill();
-
-                                 for (int i = 0; i < queue->count(); ++i) {
-                                     if (queue->itemWidget(queue->item(i)) == wItem) {
-                                         delete queue->takeItem(i);
-                                         break;
-                                     }
-                                 }
-                             });
-
-                             fade->start(QAbstractAnimation::DeleteWhenStopped);
-                         });
-
-        QObject::connect(widget, &DownloadItemWidget::startRequested, [=](DownloadItemWidget *wItem) {
-            if (!wItem->isDownloading) {
-                wItem->lblStatus->setText("Starting download...");
-                wItem->progress->setRange(0, 0);
-                wItem->progress->show();
-                wItem->currentType = "Video";
-                wItem->proc = new QProcess(wItem);
-                wItem->proc->setProcessChannelMode(QProcess::MergedChannels);
-
-                QObject::connect(wItem->proc, &QProcess::readyReadStandardOutput, [wItem]() {
-                    if (!wItem->proc) return;
-
-                    QByteArray output = wItem->proc->readAllStandardOutput();
-                    QStringList lines = QString(output).split("\n", Qt::SkipEmptyParts);
-
-                    for (QString &line : lines) {
-                        QJsonParseError err;
-                        QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8(), &err);
-
-                        if (err.error == QJsonParseError::NoError && doc.isObject()) {
-                            QJsonObject obj = doc.object();
-                            QString status = obj.value("status").toString();
-                            if (!status.isEmpty())
-                                wItem->lblStatus->setText(status + " - " + obj.value("downloaded_bytes").toVariant().toString());
-
-                        } else {
-                            if (line.contains("download") && line.contains("ETA"))
-                                wItem->parseYtDlpStatus(line);
-                            else if (line.contains("Destination") && line.contains(".mp4"))
-                                wItem->currentType = "Video";
-                            else if (line.contains("Destination"))
-                                wItem->currentType = "Audio";
-                            else if (line.contains("Merger"))
-                            {
-                                wItem->progress->setRange(0, 0);
-                                wItem->btnStart->setEnabled(false);
-                                wItem->lblStatus->setText("Merging Video & Audio ...");
-                            }
-                        }
-                    }
-                });
-
-                QObject::connect(wItem->proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                                 [wItem](int exitCode, QProcess::ExitStatus status) {
-                                     if (exitCode == 0) {
-                                         wItem->progress->setRange(0, 100);
-                                         wItem->progress->setValue(100);
-                                         wItem->setFinished();
-                                         wItem->btnStart->setEnabled(false);
-                                     }
-                                     else
-                                         wItem->lblStatus->setText("Stopped");
-
-                                     wItem->proc->deleteLater();
-                                     wItem->proc = nullptr;
-                                 });
-
-                QString outputName = QString("%1 [%2]").arg(sanitizeFileName(item.title)).arg(item.resolution);
-                QString outputPath = QString("%1/%2").arg(saveFolder).arg(generateUniqueFileName(item.saveFolder, outputName));
-
-                QString program = "python";
-                QStringList args;
-                args << "-m" << "yt_dlp"
-                     << "--ffmpeg-location" << QCoreApplication::applicationDirPath()
-                     << "--newline"
-                     << "-c"
-                     << "-f"  << QString("%1+%2/%1").arg(item.videoFormat, item.audioFormat)
-                     << "--merge-output-format" << "mp4"
-                     << "-o" << outputPath
-                     << item.url;
-
-                wItem->proc->start(program, args);
-                wItem->isDownloading = true;
-                wItem->btnStart->setText("Stop");
-            }
-            else
-            {
-                if (wItem->proc && wItem->proc->state() == QProcess::Running)
-                    wItem->proc->kill();
-
-                wItem->progress->hide();
-                wItem->isDownloading = false;
-                wItem->btnStart->setText("Resume");
-            }
-        });
 
         QListWidgetItem *li = new QListWidgetItem(queue);
         li->setSizeHint(QSize(500, 90));
         queue->setItemWidget(li, widget);
         urlEdit->setText("");
+        saveQueue(queue);
     });
 
     QObject::connect(urlEdit, &QLineEdit::textChanged, [&]() {
@@ -496,6 +573,10 @@ int main(int argc, char *argv[])
         btnFolder->setEnabled(false);
         btnAdd->setEnabled(false);
         lblStatus->setText("Status: Enter URL and check info...");
+    });
+
+    QObject::connect(&app, &QApplication::aboutToQuit, [&]() {
+        saveQueue(queue);
     });
 
     w.show();
