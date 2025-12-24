@@ -171,12 +171,12 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
             QString program = QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
             QStringList args;
             args << "--ffmpeg-location" << QCoreApplication::applicationDirPath()
-                << "--newline"
-                << "-c"
-                << "-f"  << QString("%1+%2/%1").arg(wItem->downloadItem.videoFormat, wItem->downloadItem.audioFormat)
-                << "--merge-output-format" << "mp4"
-                << "-o" << outputPath
-                << wItem->downloadItem.url;
+                 << "--newline"
+                 << "-c"
+                 << "-f"  << QString("%1+%2/%1").arg(wItem->downloadItem.videoFormat, wItem->downloadItem.audioFormat)
+                 << "--merge-output-format" << "mp4"
+                 << "-o" << outputPath
+                 << wItem->downloadItem.url;
 
             wItem->proc->start(program, args);
             wItem->isDownloading = true;
@@ -231,8 +231,8 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     app.setWindowIcon(QIcon(":/icons/appicon.png"));
     QWidget w;
-    w.setWindowTitle("YouTube Download Manager V1.5");
-    w.setFixedSize(1050, 600);
+    w.setWindowTitle("YouTube Download Manager V1.6");
+    w.setFixedSize(1050, 650);
 
     //--------------------Parameters--------------------
 
@@ -242,6 +242,10 @@ int main(int argc, char *argv[])
     QString currentThumbPath;
     QString outputPath;
     QNetworkAccessManager *networkManager = new QNetworkAccessManager(&w);
+    QJsonArray playlistEntries;
+    int currentPlaylistIndex = 0;
+    bool isPlaylist = false;
+    QString videoUrl;
 
     //--------------------Main Ui--------------------
 
@@ -254,7 +258,7 @@ int main(int argc, char *argv[])
     loadQueue(queue);
     mainLayout->addWidget(queue, 1);
 
-    leftWidget->setFixedSize(475,600);
+    leftWidget->setFixedSize(475,650);
     QVBoxLayout *left = new QVBoxLayout(leftWidget);
 
     //--------------------Left Menu--------------------
@@ -279,6 +283,30 @@ int main(int argc, char *argv[])
     ring->move((lblStoryboard->width() - ring->width()) / 2,
                (lblStoryboard->height() - ring->height()) / 2);
     ring->hide();
+
+    //--------------------Play List Nav--------------------
+
+    QHBoxLayout *playlistNav = new QHBoxLayout();
+    left->addLayout(playlistNav);
+    playlistNav->addStretch();
+
+    QPushButton *btnPrev = new QPushButton("◀");
+    btnPrev->setFixedSize(40, 30);
+    btnPrev->hide();
+    playlistNav->addWidget(btnPrev);
+
+    QLabel *lblPlaylistIndex = new QLabel("0 / 0");
+    lblPlaylistIndex->setAlignment(Qt::AlignCenter);
+    lblPlaylistIndex->setMinimumWidth(60);
+    lblPlaylistIndex->hide();
+    playlistNav->addWidget(lblPlaylistIndex);
+
+    QPushButton *btnNext = new QPushButton("▶");
+    btnNext->setFixedSize(40, 30);
+    btnNext->hide();
+    playlistNav->addWidget(btnNext);
+
+    playlistNav->addStretch();
 
     //--------------------Video Quality--------------------
 
@@ -343,6 +371,169 @@ int main(int argc, char *argv[])
 
     //--------------------Slot Method--------------------
 
+    auto loadPlaylistItem = [&](int index) {
+        if (index < 0 || index >= playlistEntries.size())
+            return;
+
+        lblPlaylistIndex->setText(QString("%1 / %2").arg(index + 1).arg(playlistEntries.size()));
+        lblPlaylistIndex->show();
+        btnNext->setEnabled(false);
+        btnPrev->setEnabled(false);
+
+        QJsonObject entry = playlistEntries[index].toObject();
+        QString id = entry.value("id").toString();
+        videoUrl = "https://www.youtube.com/watch?v=" + id;
+
+        ring->startIndeterminate();
+        videoCombo->clear();
+        audioCombo->clear();
+        lblStoryboard->clear();
+
+        QProcess *proc = new QProcess(&w);
+        proc->setProcessChannelMode(QProcess::MergedChannels);
+
+        QObject::connect(proc, &QProcess::readyReadStandardOutput, [=, &currentThumb, &realTitle, &realExt, &currentThumbPath]() {
+            QByteArray output = proc->readAllStandardOutput();
+            QJsonParseError err;
+            QJsonDocument doc = QJsonDocument::fromJson(output, &err);
+
+            if (err.error != QJsonParseError::NoError || !doc.isObject())
+                return;
+
+            QJsonObject obj = doc.object();
+
+            realTitle = obj.value("title").toString();
+            realExt = obj.value("ext").toString();
+            lblTitle->setText("Title: " + realTitle);
+
+            //--------------------Add Video & Audio Quality--------------------
+            QSet<QString> videoQualities, audioQualities;
+            videoCombo->clear();
+            audioCombo->clear();
+
+            QJsonArray formats = obj.value("formats").toArray();
+            for (auto f : formats) {
+                QJsonObject fmt = f.toObject();
+                qint64 filesize = fmt.value("filesize").toVariant().toLongLong();
+
+                QString sizeText;
+                if (filesize > (1024*1024*1024))
+                    sizeText = QString(" ~ %1 GB").arg(filesize / (1024*1024*1024));
+                else if (filesize > (1024*1024))
+                    sizeText = QString(" ~ %1 MB").arg(filesize / (1024*1024));
+                else if (filesize > 1024)
+                    sizeText = QString(" ~ %1 KB").arg(filesize / 1024);
+                else if (filesize > 0)
+                    sizeText = QString(" ~ %1 B").arg(filesize);
+
+                QString acodec = fmt.value("acodec").toString();
+                QString vcodec = fmt.value("vcodec").toString();
+                QString format_id = fmt.value("format_id").toString();
+                if (!sizeText.isEmpty()) {
+                    if (vcodec != "none") {
+                        QString resolution = fmt.value("resolution").toString();
+                        if (!videoQualities.contains(resolution)) {
+                            videoQualities.insert(resolution);
+
+                            videoCombo->addItem(resolution + sizeText, format_id);
+                        }
+                    }
+                    else if (vcodec == "none" && acodec != "none")
+                    {
+                        double abr = fmt.value("abr").toDouble(0.0);
+
+                        if (abr > 0.1) {
+                            QString key = QString("%1-%2").arg(acodec).arg(abr);
+                            if (audioQualities.contains(key)) continue;
+                            audioQualities.insert(key);
+
+                            QString display = QString("%1 kbps (%2)%3")
+                                                  .arg(abr)
+                                                  .arg(acodec)
+                                                  .arg(sizeText);
+
+                            audioCombo->addItem(display, format_id);
+                        }
+                    }
+                }
+            }
+
+            if (audioCombo->count() == 0)
+                audioCombo->addItem("Best audio", "ba");
+
+            //--------------------Thumbnails Load--------------------
+
+            QJsonArray thumbnails = obj.value("thumbnails").toArray();
+            QString bestUrlThumbnails;
+            int maxWidth = 0;
+
+            for (auto t : thumbnails) {
+                QJsonObject thumb = t.toObject();
+                QString url = thumb.value("url").toString();
+                int width = thumb.value("width").toInt(0);
+                QString fileName = QFileInfo(QUrl(url).fileName()).completeBaseName();
+
+                if (fileName.isEmpty()) continue;
+
+                if (width > maxWidth) {
+                    maxWidth = width;
+                    bestUrlThumbnails = url;
+                }
+            }
+
+            if (!bestUrlThumbnails.isEmpty()) {
+                QNetworkRequest request((QUrl(bestUrlThumbnails)));
+                QString fileName = QFileInfo(QUrl(bestUrlThumbnails).fileName()).completeBaseName();
+                QNetworkReply *reply = networkManager->get(request);
+
+                QObject::connect(reply, &QNetworkReply::finished, [reply, lblStoryboard, realTitle,
+                                                                   &currentThumb, &currentThumbPath,
+                &btnPrev, &btnNext, &index, &playlistEntries, &ring]() {
+                    QByteArray data = reply->readAll();
+                    QPixmap pix;
+                    if (pix.loadFromData(data)) {
+                        currentThumb = pix;
+                        lblStoryboard->setPixmap(pix.scaled(lblStoryboard->size(),
+                                                            Qt::KeepAspectRatio, Qt::SmoothTransformation));
+
+                        QString thumbDir = QStandardPaths::writableLocation(
+                                               QStandardPaths::AppDataLocation
+                                               ) + "/thumbs";
+
+                        QDir().mkpath(thumbDir);
+
+                        QString thumbFile = thumbDir + "/" +
+                                            sanitizeFileName(realTitle) + ".jpg";
+
+                        pix.save(thumbFile, "JPG");
+                        currentThumbPath = thumbFile;
+
+                        btnPrev->setEnabled(index > 0);
+                        btnNext->setEnabled(index < playlistEntries.size() - 1);
+                        ring->stop();
+                    }
+                    reply->deleteLater();
+                });
+            }
+
+            videoCombo->setEnabled(true);
+            audioCombo->setEnabled(true);
+            btnFolder->setEnabled(true);
+            btnAdd->setEnabled(true);
+
+            if (videoCombo->count() > 0) {
+                int index = videoCombo->currentIndex();
+                emit videoCombo->currentIndexChanged(index);
+            }
+        });
+
+        QObject::connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                         proc, &QObject::deleteLater);
+
+        QString program = QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
+        proc->start(program, {"--dump-json", videoUrl});
+    };
+
     auto updatePathLabel = [&](const QString &fullPath) {
         int avail = lblPath->width();
         if (avail <= 0) avail = lblPath->maximumWidth();
@@ -374,13 +565,33 @@ int main(int argc, char *argv[])
         QProcess *proc = new QProcess(&w);
         proc->setProcessChannelMode(QProcess::MergedChannels);
 
-        QObject::connect(proc, &QProcess::readyReadStandardOutput, [=, &realTitle, &realExt, &currentThumb, &currentThumbPath]() {
+        QObject::connect(proc, &QProcess::readyReadStandardOutput, [=, &realTitle, &realExt, &currentThumb,
+                                                                    &currentThumbPath, &isPlaylist, &playlistEntries,
+                                                                    &currentPlaylistIndex]() {
             QByteArray output = proc->readAllStandardOutput();
             QJsonParseError err;
             QJsonDocument doc = QJsonDocument::fromJson(output, &err);
 
             if (err.error == QJsonParseError::NoError && doc.isObject()) {
                 QJsonObject obj = doc.object();
+                if (obj.contains("entries")) {
+                    isPlaylist = true;
+                    playlistEntries = obj.value("entries").toArray();
+                    currentPlaylistIndex = 0;
+
+                    btnPrev->show();
+                    btnNext->show();
+
+                    loadPlaylistItem(0);
+                    return;
+                } else {
+                    isPlaylist = false;
+                    playlistEntries = QJsonArray();
+
+                    btnPrev->hide();
+                    btnNext->hide();
+                }
+
                 realTitle = obj.value("title").toString();
                 realExt = obj.value("ext").toString();
                 lblTitle->setText("Title: " + realTitle);
@@ -503,12 +714,12 @@ int main(int argc, char *argv[])
         });
 
         QObject::connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                         [=](int exitCode, QProcess::ExitStatus status) {
+                         [=, &isPlaylist](int exitCode, QProcess::ExitStatus status) {
                              Q_UNUSED(exitCode);
                              Q_UNUSED(status);
                              ring->stop();
 
-                             if (videoCombo->count() == 0)
+                             if (!isPlaylist && videoCombo->count() == 0)
                                  lblStatus->setText("Error: Not Found Url");
                              else
                                  lblStatus->setText("Status: Info fetch finished.");
@@ -520,7 +731,8 @@ int main(int argc, char *argv[])
 
         QString program = QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
         QStringList args;
-        args << "--dump-json"
+        args << "--flat-playlist"
+             << "--dump-single-json"
              << urlEdit->text();
 
         proc->start(program, args);
@@ -534,7 +746,7 @@ int main(int argc, char *argv[])
         baseName = generateUniqueFileName(saveFolder, baseName);
 
         DownloadItem item;
-        item.url = urlEdit->text();
+        item.url = isPlaylist? videoUrl : urlEdit->text();
         item.title = realTitle;
         item.resolution = resolution;
         item.videoFormat = videoCombo->currentData().toString();
@@ -558,7 +770,8 @@ int main(int argc, char *argv[])
         QListWidgetItem *li = new QListWidgetItem(queue);
         li->setSizeHint(QSize(500, 90));
         queue->setItemWidget(li, widget);
-        urlEdit->setText("");
+        if (!isPlaylist)
+            urlEdit->setText("");
         saveQueue(queue);
     });
 
@@ -573,6 +786,28 @@ int main(int argc, char *argv[])
         btnFolder->setEnabled(false);
         btnAdd->setEnabled(false);
         lblStatus->setText("Status: Enter URL and check info...");
+        isPlaylist = false;
+        playlistEntries = QJsonArray();
+
+        lblPlaylistIndex->hide();
+        btnPrev->hide();
+        btnNext->hide();
+    });
+
+    QObject::connect(btnNext, &QPushButton::clicked, [&]() {
+        if (!isPlaylist) return;
+        if (currentPlaylistIndex < playlistEntries.size() - 1) {
+            currentPlaylistIndex++;
+            loadPlaylistItem(currentPlaylistIndex);
+        }
+    });
+
+    QObject::connect(btnPrev, &QPushButton::clicked, [&]() {
+        if (!isPlaylist) return;
+        if (currentPlaylistIndex > 0) {
+            currentPlaylistIndex--;
+            loadPlaylistItem(currentPlaylistIndex);
+        }
     });
 
     QObject::connect(&app, &QApplication::aboutToQuit, [&]() {
