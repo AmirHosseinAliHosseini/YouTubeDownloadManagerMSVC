@@ -14,7 +14,7 @@ class DownloadItemWidget : public QWidget
 public:
     explicit DownloadItemWidget(const DownloadItem &item, QWidget *parent = nullptr);
 
-    DownloadItem downloadItem;
+    DownloadItem dItem;
 
     QLabel *lblThumb;
     QLabel *lblTitle;

@@ -7,77 +7,79 @@
 
 class DownloadItem {
 public:
-    QString url;
-    QString title;
-    QString videoFormat;
-    QString audioFormat;
-    QString resolution;
-    QString baseName;
-    QString saveFolder;
-    QString finalFilePath;
-    bool canResume = false;
-    bool finished = false;
-
-    QString thumbPath;
+    QString Url;
+    QString Title;
+    QString VideoFId;
+    QString AudioFId;
+    QString Resolution;
+    QString FileName;
+    QString SaveFolder;
+    QString FullPath;
+    QString ThumbPath;
+    QString Status = "Queued";
+    int DownloadState = 0;
 
     void hasPartialFile()
     {
-        QDir dir(saveFolder);
+        if (DownloadState == 2)
+            return;
+
+        QDir dir(SaveFolder);
         QStringList files = dir.entryList(QDir::Files);
-        canResume = false;
+        DownloadState = 0;
 
         QRegularExpression re("^" +
-                              QRegularExpression::escape(baseName) +
-                              R"(\.f)" +  QRegularExpression::escape(videoFormat) +
+                              QRegularExpression::escape(FileName) +
+                              R"(\.f)" +  QRegularExpression::escape(VideoFId) +
                               R"(\.\w+\.part$)"
                               );
 
         for (const QString &file : files) {
             if (re.match(file).hasMatch())
-                canResume = true;
+                DownloadState = 1;
         }
 
         re = QRegularExpression("^" +
-                                QRegularExpression::escape(baseName) +
-                                R"(\.f)" +  QRegularExpression::escape(videoFormat) +
+                                QRegularExpression::escape(FileName) +
+                                R"(\.f)" +  QRegularExpression::escape(VideoFId) +
                                 R"(\.\w+$)"
                                 );
 
         for (const QString &file : files) {
             if (re.match(file).hasMatch())
-                canResume = true;
+                DownloadState = 1;
         }
     }
 
     QJsonObject toJson() const {
         QJsonObject o;
-        o["url"] = url;
-        o["title"] = title;
-        o["videoFormat"] = videoFormat;
-        o["audioFormat"] = audioFormat;
-        o["resolution"] = resolution;
-        o["baseName"] = baseName;
-        o["saveFolder"] = saveFolder;
-        o["finalFilePath"] = finalFilePath;
-        o["canResume"] = canResume;
-        o["finished"] = finished;
-        o["thumbPath"] = thumbPath;
+        o["Url"] = Url;
+        o["Title"] = Title;
+        o["VideoFId"] = VideoFId;
+        o["AudioFId"] = AudioFId;
+        o["Resolution"] = Resolution;
+        o["FileName"] = FileName;
+        o["SaveFolder"] = SaveFolder;
+        o["FullPath"] = FullPath;
+        o["ThumbPath"] = ThumbPath;
+        o["Status"] = Status;
+        o["DownloadState"] = DownloadState;
         return o;
     }
 
     static DownloadItem fromJson(const QJsonObject &o) {
         DownloadItem item;
-        item.url = o["url"].toString();
-        item.title = o["title"].toString();
-        item.videoFormat = o["videoFormat"].toString();
-        item.audioFormat = o["audioFormat"].toString();
-        item.resolution = o["resolution"].toString();
-        item.baseName = o["baseName"].toString();
-        item.saveFolder = o["saveFolder"].toString();
-        item.finalFilePath = o["finalFilePath"].toString();
-        item.canResume = o["canResume"].toBool();
-        item.finished = o["finished"].toBool();
-        item.thumbPath = o["thumbPath"].toString();
+        item.Url = o["Url"].toString();
+        item.Title = o["Title"].toString();
+        item.VideoFId = o["VideoFId"].toString();
+        item.AudioFId = o["AudioFId"].toString();
+        item.Resolution = o["Resolution"].toString();
+        item.FileName = o["FileName"].toString();
+        item.SaveFolder = o["SaveFolder"].toString();
+        item.FullPath = o["FullPath"].toString();
+        item.ThumbPath = o["ThumbPath"].toString();
+        item.Status = o["Status"].toString();
+        item.DownloadState = o["DownloadState"].toInt();
         return item;
     }
 };

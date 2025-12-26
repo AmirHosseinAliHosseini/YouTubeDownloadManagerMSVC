@@ -5,7 +5,7 @@
 #include <QMessageBox>
 
 DownloadItemWidget::DownloadItemWidget(const DownloadItem &item, QWidget *parent)
-    : QWidget(parent), downloadItem(item)
+    : QWidget(parent), dItem(item)
 {
     setAttribute(Qt::WA_Hover, true);
     setMouseTracking(true);
@@ -26,15 +26,15 @@ DownloadItemWidget::DownloadItemWidget(const DownloadItem &item, QWidget *parent
     lblTitle = new QLabel("");
     lblTitle->setStyleSheet("font-weight: bold;");
     QFontMetrics fm(lblTitle->font());
-    QString elided = fm.elidedText(downloadItem.title, Qt::ElideRight, lblTitle->width());
+    QString elided = fm.elidedText(dItem.Title, Qt::ElideRight, lblTitle->width());
     lblTitle->setText(elided);
-    lblTitle->setToolTip(downloadItem.title);
+    lblTitle->setToolTip(dItem.Title);
     topBar->addWidget(lblTitle);
 
     btnRemove = new QPushButton("✕", this);
     btnRemove->setFixedSize(20, 20);
     btnRemove->setCursor(Qt::PointingHandCursor);
-    btnRemove->setToolTip("Remove from queue");
+    btnRemove->setToolTip("Remove");
     btnRemove->hide();
     btnRemove->setStyleSheet(R"(
                                 QPushButton {
@@ -49,7 +49,8 @@ DownloadItemWidget::DownloadItemWidget(const DownloadItem &item, QWidget *parent
                                 )");
     topBar->addWidget(btnRemove);
 
-    lblStatus = new QLabel("Waiting");
+    lblStatus = new QLabel(dItem.Status);
+    dItem.Status = lblStatus->text();
     right->addWidget(lblStatus);
 
     QHBoxLayout *download = new QHBoxLayout();
@@ -60,6 +61,7 @@ DownloadItemWidget::DownloadItemWidget(const DownloadItem &item, QWidget *parent
     progress->setValue(0);
     progress->setTextVisible(false);
     progress->setFixedHeight(6);
+    progress->setFixedWidth(300);
     progress->hide();
     progress->setStyleSheet(R"(
                                 QProgressBar {
@@ -72,40 +74,36 @@ DownloadItemWidget::DownloadItemWidget(const DownloadItem &item, QWidget *parent
                                 }
                                 )");
     download->addWidget(progress);
+    download->addStretch();
 
-    btnStart = new QPushButton("Start");
-    downloadItem.hasPartialFile();
-    btnStart->setText("▶");
-    btnStart->setToolTip(downloadItem.canResume ? "Resume download" : "Start download");
+    btnStart = new QPushButton(dItem.DownloadState == 1 ? "Resume" : "Start");
+    dItem.hasPartialFile();
+    btnStart->setToolTip(dItem.DownloadState == 1 ? "Resume download" : "Start download");
     download->addWidget(btnStart, 0, Qt::AlignRight);
 
     btnPlay = new QPushButton("▶");
     btnPlay->setToolTip("Play video");
     btnPlay->setVisible(false);
+    download->addWidget(btnPlay);
 
     btnOpenFolder = new QPushButton("📂");
-    btnOpenFolder->setToolTip("Open folder");
+    btnOpenFolder->setToolTip("Show in folder");
     btnOpenFolder->setVisible(false);
-
-    download->addWidget(btnPlay);
     download->addWidget(btnOpenFolder);
 
-    if (downloadItem.finished)
+    if (dItem.DownloadState == 2)
         setFinished();
 
     connect(btnPlay, &QPushButton::clicked, this, [this]() {
-        if (downloadItem.finalFilePath.isEmpty()) return;
+        if (dItem.FullPath.isEmpty()) return;
 
-        QDesktopServices::openUrl(
-            QUrl::fromLocalFile(downloadItem.finalFilePath)
-            );
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dItem.FullPath));
     });
 
     connect(btnOpenFolder, &QPushButton::clicked, this, [this]() {
-        QString path = downloadItem.finalFilePath;
+        QString path = dItem.FullPath;
         if (path.isEmpty() || !QFile::exists(path)) {
-            QMessageBox::warning(this, "File not found",
-                                 "Video file does not exist.");
+            QMessageBox::warning(this, "File not found", "The video file could not be found.");
             return;
         }
 
@@ -154,16 +152,20 @@ void DownloadItemWidget::parseYtDlpStatus(QString &line)
                            .arg(match.captured(3).replace("MiB/s"," MB/sec").replace("KiB/s"," KB/sec"))
                            .arg(match.captured(4))
                            .arg(currentType));
+
+    dItem.Status = lblStatus->text();
 }
 
 void DownloadItemWidget::setFinished()
 {
     lblStatus->setText("Completed");
-    btnStart->setEnabled(false);
+    dItem.Status = lblStatus->text();
     btnStart->hide();
-    btnPlay->setVisible(true);
-    btnOpenFolder->setVisible(true);
-    downloadItem.finished = true;
+    btnStart->hide();
+    btnPlay->show();
+    btnOpenFolder->show();
+    progress->hide();
+    dItem.DownloadState = 2;
 }
 
 void DownloadItemWidget::enterEvent(QEnterEvent *event)

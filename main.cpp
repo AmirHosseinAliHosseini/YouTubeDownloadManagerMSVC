@@ -65,7 +65,7 @@ void saveQueue(QListWidget *queue) {
             );
         if (!w) continue;
 
-        arr.append(w->downloadItem.toJson());
+        arr.append(w->dItem.toJson());
     }
 
     QFile f(queueFilePath());
@@ -79,8 +79,8 @@ void saveQueue(QListWidget *queue) {
 void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString saveFolder) {
     QObject::connect(widget, &DownloadItemWidget::removeRequested,
                      [=](DownloadItemWidget *wItem) {
-                         auto reply = QMessageBox::question(wItem, "Remove item",
-                                                            "Are you sure you want to remove this item?", QMessageBox::Yes | QMessageBox::No);
+                         auto reply = QMessageBox::question(wItem, "Remove ِDownload",
+                                                            "Do you want to remove this download?", QMessageBox::Yes | QMessageBox::No);
                          if (reply != QMessageBox::Yes) return;
 
                          auto *opacity = new QGraphicsOpacityEffect(wItem);
@@ -108,7 +108,12 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
 
     QObject::connect(widget, &DownloadItemWidget::startRequested, [=](DownloadItemWidget *wItem) {
         if (!wItem->isDownloading) {
-            wItem->lblStatus->setText("Starting download...");
+            if (wItem->dItem.DownloadState == 0)
+                wItem->lblStatus->setText("Starting ...");
+            else
+                wItem->lblStatus->setText("Resuming ...");
+
+            wItem->dItem.Status = wItem->lblStatus->text();
             wItem->progress->setRange(0, 0);
             wItem->progress->show();
             wItem->currentType = "Video";
@@ -128,8 +133,10 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
                     if (err.error == QJsonParseError::NoError && doc.isObject()) {
                         QJsonObject obj = doc.object();
                         QString status = obj.value("status").toString();
-                        if (!status.isEmpty())
+                        if (!status.isEmpty()) {
                             wItem->lblStatus->setText(status + " - " + obj.value("downloaded_bytes").toVariant().toString());
+                            wItem->dItem.Status = wItem->lblStatus->text();
+                        }
 
                     } else {
                         if (line.contains("download") && line.contains("ETA"))
@@ -142,7 +149,8 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
                         {
                             wItem->progress->setRange(0, 0);
                             wItem->btnStart->setEnabled(false);
-                            wItem->lblStatus->setText("Merging Video & Audio ...");
+                            wItem->lblStatus->setText("Merging video and audio...");
+                            wItem->dItem.Status = wItem->lblStatus->text();
                         }
                     }
                 }
@@ -156,27 +164,29 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
                                      wItem->setFinished();
                                      wItem->btnStart->setEnabled(false);
                                  }
-                                 else
-                                     wItem->lblStatus->setText("Stopped");
+                                 else {
+                                     wItem->lblStatus->setText("Download stopped");
+                                     wItem->dItem.Status = wItem->lblStatus->text();
+                                 }
 
                                  wItem->proc->deleteLater();
                                  wItem->proc = nullptr;
                                  saveQueue(queue);
                              });
 
-            QString outputName = QString("%1 [%2]").arg(sanitizeFileName(wItem->downloadItem.title)).arg(wItem->downloadItem.resolution);
-            QString outputPath = QString("%1/%2").arg(saveFolder).arg(generateUniqueFileName(wItem->downloadItem.saveFolder, outputName));
-            wItem->downloadItem.finalFilePath = outputPath + ".mp4";
+            QString outputName = QString("%1 [%2]").arg(sanitizeFileName(wItem->dItem.Title)).arg(wItem->dItem.Resolution);
+            QString outputPath = QString("%1/%2").arg(saveFolder).arg(generateUniqueFileName(wItem->dItem.SaveFolder, outputName));
+            wItem->dItem.FullPath = outputPath + ".mp4";
 
             QString program = QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
             QStringList args;
             args << "--ffmpeg-location" << QCoreApplication::applicationDirPath()
                  << "--newline"
                  << "-c"
-                 << "-f"  << QString("%1+%2/%1").arg(wItem->downloadItem.videoFormat, wItem->downloadItem.audioFormat)
+                 << "-f"  << QString("%1+%2/%1").arg(wItem->dItem.VideoFId, wItem->dItem.AudioFId)
                  << "--merge-output-format" << "mp4"
                  << "-o" << outputPath
-                 << wItem->downloadItem.url;
+                 << wItem->dItem.Url;
 
             wItem->proc->start(program, args);
             wItem->isDownloading = true;
@@ -192,6 +202,8 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
             wItem->isDownloading = false;
             wItem->btnStart->setText("▶");
             wItem->btnStart->setToolTip("Resume download");
+            wItem->lblStatus->setText("Cancelled");
+            wItem->dItem.Status = wItem->lblStatus->text();
         }
     });
 }
@@ -207,14 +219,14 @@ void loadQueue(QListWidget *queue) {
         DownloadItem item = DownloadItem::fromJson(v.toObject());
 
         auto *widget = new DownloadItemWidget(item);
-        connectDownloadItem(widget, queue, item.saveFolder);
+        connectDownloadItem(widget, queue, item.SaveFolder);
 
         QListWidgetItem *li = new QListWidgetItem(queue);
         li->setSizeHint(QSize(500, 90));
         queue->setItemWidget(li, widget);
 
-        if (!item.thumbPath.isEmpty() && QFile::exists(item.thumbPath)) {
-            QPixmap pix(item.thumbPath);
+        if (!item.ThumbPath.isEmpty() && QFile::exists(item.ThumbPath)) {
+            QPixmap pix(item.ThumbPath);
             widget->lblThumb->setPixmap(
                 pix.scaled(widget->lblThumb->size(),
                            Qt::KeepAspectRatio,
@@ -254,27 +266,43 @@ int main(int argc, char *argv[])
     QWidget *leftWidget = new QWidget(&w);
     mainLayout->addWidget(leftWidget);
 
-    QListWidget *queue = new QListWidget();
-    loadQueue(queue);
-    mainLayout->addWidget(queue, 1);
-
     leftWidget->setFixedSize(475,650);
     QVBoxLayout *left = new QVBoxLayout(leftWidget);
+
+    QVBoxLayout *right = new QVBoxLayout();
+    mainLayout->addLayout(right, 1);
+
+    //--------------------Right Menu--------------------
+
+    QHBoxLayout *clearLayout = new QHBoxLayout();
+    right->addLayout(clearLayout);
+
+    QPushButton *btnClearAll = new QPushButton("️🗑 Clear All Downloads");
+    clearLayout->addWidget(btnClearAll);
+
+    QPushButton *btnClearDownloaded = new QPushButton("🗑 Clear Completed Downloads");
+    clearLayout->addWidget(btnClearDownloaded);
+    clearLayout->addStretch();
+
+    QListWidget *queue = new QListWidget();
+    loadQueue(queue);
+    right->addWidget(queue);
 
     //--------------------Left Menu--------------------
 
     QLineEdit *urlEdit = new QLineEdit();
+    urlEdit->setPlaceholderText("Enter video URL here...");
     left->addWidget(urlEdit);
 
-    QPushButton *btnCheck = new QPushButton("Check Video Info");
+    QPushButton *btnCheck = new QPushButton("Get Info");
     left->addWidget(btnCheck);
 
-    QLabel *lblTitle = new QLabel("Title will appear here");
+    QLabel *lblTitle = new QLabel("Video Title");
     left->addWidget(lblTitle);
 
     //--------------------Story Board--------------------
 
-    QLabel *lblStoryboard = new QLabel("Storyboard will appear here");
+    QLabel *lblStoryboard = new QLabel("Storyboard preview");
     lblStoryboard->setAlignment(Qt::AlignCenter);
     lblStoryboard->setFixedSize(448, 252);
     left->addWidget(lblStoryboard);
@@ -292,10 +320,11 @@ int main(int argc, char *argv[])
 
     QPushButton *btnPrev = new QPushButton("◀");
     btnPrev->setFixedSize(40, 30);
+    btnPrev->setToolTip("Previous video");
     btnPrev->hide();
     playlistNav->addWidget(btnPrev);
 
-    QLabel *lblPlaylistIndex = new QLabel("0 / 0");
+    QLabel *lblPlaylistIndex = new QLabel("Playlist: 0 / 0");
     lblPlaylistIndex->setAlignment(Qt::AlignCenter);
     lblPlaylistIndex->setMinimumWidth(60);
     lblPlaylistIndex->hide();
@@ -303,6 +332,7 @@ int main(int argc, char *argv[])
 
     QPushButton *btnNext = new QPushButton("▶");
     btnNext->setFixedSize(40, 30);
+    btnNext->setToolTip(QObject::tr("Next video"));
     btnNext->hide();
     playlistNav->addWidget(btnNext);
 
@@ -348,25 +378,25 @@ int main(int argc, char *argv[])
     pathWidget->setLayout(laypath);
     left->addWidget(pathWidget);
 
-    QLabel *lblPath = new QLabel("Path: " + saveFolder);
+    QLabel *lblPath = new QLabel("Save Path: " + saveFolder);
     lblPath->setMaximumWidth(400);
     lblPath->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     lblPath->setTextInteractionFlags(Qt::TextSelectableByMouse);
     lblPath->setWordWrap(false);
     laypath->addWidget(lblPath);
 
-    QPushButton *btnFolder = new QPushButton("Choose folder");
-    btnFolder->setMaximumWidth(100);
+    QPushButton *btnFolder = new QPushButton("📂 Select folder");
+    btnFolder->setMaximumWidth(120);
     btnFolder->setEnabled(false);
     laypath->addWidget(btnFolder);
 
     //--------------------Left Menu--------------------
 
-    QPushButton *btnAdd = new QPushButton("Add to List");
+    QPushButton *btnAdd = new QPushButton("➕ Add to Queue");
     btnAdd->setEnabled(false);
     left->addWidget(btnAdd);
 
-    QLabel *lblStatus = new QLabel("Status...");
+    QLabel *lblStatus = new QLabel("Status : Idle");
     left->addWidget(lblStatus);
 
     //--------------------Slot Method--------------------
@@ -375,7 +405,7 @@ int main(int argc, char *argv[])
         if (index < 0 || index >= playlistEntries.size())
             return;
 
-        lblPlaylistIndex->setText(QString("%1 / %2").arg(index + 1).arg(playlistEntries.size()));
+        lblPlaylistIndex->setText(QString("Playlist: %1 / %2").arg(index + 1).arg(playlistEntries.size()));
         lblPlaylistIndex->show();
         btnNext->setEnabled(false);
         btnPrev->setEnabled(false);
@@ -404,7 +434,7 @@ int main(int argc, char *argv[])
 
             realTitle = obj.value("title").toString();
             realExt = obj.value("ext").toString();
-            lblTitle->setText("Title: " + realTitle);
+            lblTitle->setText(QObject::tr("Video Title: %1").arg(realTitle));
 
             //--------------------Add Video & Audio Quality--------------------
             QSet<QString> videoQualities, audioQualities;
@@ -418,13 +448,13 @@ int main(int argc, char *argv[])
 
                 QString sizeText;
                 if (filesize > (1024*1024*1024))
-                    sizeText = QString(" ~ %1 GB").arg(filesize / (1024*1024*1024));
+                    sizeText = QString(" (~ %1 GB)").arg(filesize / (1024*1024*1024));
                 else if (filesize > (1024*1024))
-                    sizeText = QString(" ~ %1 MB").arg(filesize / (1024*1024));
+                    sizeText = QString(" (~ %1 MB)").arg(filesize / (1024*1024));
                 else if (filesize > 1024)
-                    sizeText = QString(" ~ %1 KB").arg(filesize / 1024);
+                    sizeText = QString(" (~ %1 KB)").arg(filesize / 1024);
                 else if (filesize > 0)
-                    sizeText = QString(" ~ %1 B").arg(filesize);
+                    sizeText = QString(" (~ %1 B)").arg(filesize);
 
                 QString acodec = fmt.value("acodec").toString();
                 QString vcodec = fmt.value("vcodec").toString();
@@ -447,7 +477,7 @@ int main(int argc, char *argv[])
                             if (audioQualities.contains(key)) continue;
                             audioQualities.insert(key);
 
-                            QString display = QString("%1 kbps (%2)%3")
+                            QString display = QString("%1 kbps %2%3")
                                                   .arg(abr)
                                                   .arg(acodec)
                                                   .arg(sizeText);
@@ -459,7 +489,7 @@ int main(int argc, char *argv[])
             }
 
             if (audioCombo->count() == 0)
-                audioCombo->addItem("Best audio", "ba");
+                audioCombo->addItem("Best Available Audio", "ba");
 
             //--------------------Thumbnails Load--------------------
 
@@ -491,10 +521,14 @@ int main(int argc, char *argv[])
                 &btnPrev, &btnNext, &index, &playlistEntries, &ring]() {
                     QByteArray data = reply->readAll();
                     QPixmap pix;
-                    if (pix.loadFromData(data)) {
+                    if (!pix.loadFromData(data)) {
+                        lblStoryboard->setText(QObject::tr("No preview available"));
+                    } else {
                         currentThumb = pix;
                         lblStoryboard->setPixmap(pix.scaled(lblStoryboard->size(),
                                                             Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                        lblStoryboard->setToolTip(QObject::tr("Thumbnail preview of %1").arg(realTitle));
+
 
                         QString thumbDir = QStandardPaths::writableLocation(
                                                QStandardPaths::AppDataLocation
@@ -540,7 +574,7 @@ int main(int argc, char *argv[])
 
         QFontMetrics fm(lblPath->font());
         QString elided = fm.elidedText(fullPath, Qt::TextElideMode::ElideMiddle, avail);
-        lblPath->setText(elided);
+        lblPath->setText(QString("Save Path: %1").arg(elided));
         lblPath->setToolTip(fullPath);
     };
 
@@ -551,8 +585,8 @@ int main(int argc, char *argv[])
 
     QObject::connect(btnCheck, &QPushButton::clicked, [&]() {
         if(urlEdit->text().isEmpty()) {
-            lblStatus->setText("Status: Enter URL first!");
-            QMessageBox::warning(&w, "Warning", "Enter URL first!");
+            lblStatus->setText("Status: Please enter a URL");
+            QMessageBox::warning(&w, "Warning", "Please enter a URL");
             return;
         }
 
@@ -560,7 +594,7 @@ int main(int argc, char *argv[])
         btnCheck->setEnabled(false);
         ring->startIndeterminate();
         lblStoryboard->clear();
-        lblStatus->setText("Status: Fetching video info...");
+        lblStatus->setText("Status: Fetching video info …");
 
         QProcess *proc = new QProcess(&w);
         proc->setProcessChannelMode(QProcess::MergedChannels);
@@ -594,7 +628,7 @@ int main(int argc, char *argv[])
 
                 realTitle = obj.value("title").toString();
                 realExt = obj.value("ext").toString();
-                lblTitle->setText("Title: " + realTitle);
+                lblTitle->setText(QObject::tr("Video Title: %1").arg(realTitle));
 
                 //--------------------Add Video & Audio Quality--------------------
                 QSet<QString> videoQualities, audioQualities;
@@ -608,13 +642,13 @@ int main(int argc, char *argv[])
 
                     QString sizeText;
                     if (filesize > (1024*1024*1024))
-                        sizeText = QString(" ~ %1 GB").arg(filesize / (1024*1024*1024));
+                        sizeText = QString(" (~ %1 GB)").arg(filesize / (1024*1024*1024));
                     else if (filesize > (1024*1024))
-                        sizeText = QString(" ~ %1 MB").arg(filesize / (1024*1024));
+                        sizeText = QString(" (~ %1 MB)").arg(filesize / (1024*1024));
                     else if (filesize > 1024)
-                        sizeText = QString(" ~ %1 KB").arg(filesize / 1024);
+                        sizeText = QString(" (~ %1 KB)").arg(filesize / 1024);
                     else if (filesize > 0)
-                        sizeText = QString(" ~ %1 B").arg(filesize);
+                        sizeText = QString(" (~ %1 B)").arg(filesize);
 
                     QString acodec = fmt.value("acodec").toString();
                     QString vcodec = fmt.value("vcodec").toString();
@@ -649,7 +683,7 @@ int main(int argc, char *argv[])
                 }
 
                 if (audioCombo->count() == 0)
-                    audioCombo->addItem("Best audio", "ba");
+                    audioCombo->addItem("Best Available Audio", "ba");
 
                 //--------------------Thumbnails Load--------------------
 
@@ -717,12 +751,14 @@ int main(int argc, char *argv[])
                          [=, &isPlaylist](int exitCode, QProcess::ExitStatus status) {
                              Q_UNUSED(exitCode);
                              Q_UNUSED(status);
-                             ring->stop();
+
+                             if (!isPlaylist)
+                                ring->stop();
 
                              if (!isPlaylist && videoCombo->count() == 0)
-                                 lblStatus->setText("Error: Not Found Url");
+                                 lblStatus->setText("Error: URL not found.");
                              else
-                                 lblStatus->setText("Status: Info fetch finished.");
+                                 lblStatus->setText("Status: Info fetched successfully.");
                              proc->deleteLater();
 
                              urlEdit->setEnabled(true);
@@ -746,19 +782,19 @@ int main(int argc, char *argv[])
         baseName = generateUniqueFileName(saveFolder, baseName);
 
         DownloadItem item;
-        item.url = isPlaylist? videoUrl : urlEdit->text();
-        item.title = realTitle;
-        item.resolution = resolution;
-        item.videoFormat = videoCombo->currentData().toString();
-        item.audioFormat = audioCombo->currentData().toString();
-        item.baseName = baseName;
-        item.saveFolder = saveFolder;
-        item.thumbPath = currentThumbPath;
+        item.Url = isPlaylist? videoUrl : urlEdit->text();
+        item.Title = realTitle;
+        item.Resolution = resolution;
+        item.VideoFId = videoCombo->currentData().toString();
+        item.AudioFId = audioCombo->currentData().toString();
+        item.FileName = baseName;
+        item.SaveFolder = saveFolder;
+        item.ThumbPath = currentThumbPath;
         item.hasPartialFile();
 
         resolution = videoCombo->currentText();
         if (resolution.isEmpty())
-            resolution = "unknown";
+            resolution = "Unknown";
         else
             resolution = resolution.split(" ").first();
 
@@ -777,7 +813,7 @@ int main(int argc, char *argv[])
 
     QObject::connect(urlEdit, &QLineEdit::textChanged, [&]() {
         btnCheck->setEnabled(true);
-        lblTitle->setText("Title will appear here");
+        lblTitle->setText("Video Title");
         lblStoryboard->clear();
         videoCombo->clear();
         videoCombo->setEnabled(false);
@@ -785,7 +821,7 @@ int main(int argc, char *argv[])
         audioCombo->setEnabled(false);
         btnFolder->setEnabled(false);
         btnAdd->setEnabled(false);
-        lblStatus->setText("Status: Enter URL and check info...");
+        lblStatus->setText("Status: Enter URL to fetch info …");
         isPlaylist = false;
         playlistEntries = QJsonArray();
 
@@ -812,6 +848,34 @@ int main(int argc, char *argv[])
 
     QObject::connect(&app, &QApplication::aboutToQuit, [&]() {
         saveQueue(queue);
+    });
+
+    QObject::connect(btnClearAll, &QPushButton::clicked, [queue]() {
+        auto reply = QMessageBox::question(nullptr, "Confirm",
+                                           "All active downloads will be stopped and removed. Do you want to continue?",
+                                           QMessageBox::Yes | QMessageBox::No);
+        if (reply != QMessageBox::Yes) return;
+
+        while (queue->count() > 0) {
+            auto *w = qobject_cast<DownloadItemWidget*>(queue->itemWidget(queue->item(0)));
+            if (w && w->proc && w->proc->state() == QProcess::Running)
+                w->proc->kill();
+            delete queue->takeItem(0);
+        }
+    });
+
+    QObject::connect(btnClearDownloaded, &QPushButton::clicked, [queue]() {
+        auto reply = QMessageBox::question(nullptr, "Confirm",
+                                           "Are you sure you want to remove all completed downloads?",
+                                           QMessageBox::Yes | QMessageBox::No);
+        if (reply != QMessageBox::Yes) return;
+
+        for (int i = queue->count() - 1; i >= 0; --i) {
+            auto *w = qobject_cast<DownloadItemWidget*>(queue->itemWidget(queue->item(i)));
+            if (w && w->dItem.DownloadState == 2) {
+                delete queue->takeItem(i);
+            }
+        }
     });
 
     w.show();
