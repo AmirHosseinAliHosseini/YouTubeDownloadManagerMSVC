@@ -8,9 +8,8 @@ This application allows you to download single videos or entire playlists, manag
 
 ## 📸 Screenshots
 
-!(screenshots/Screenshot-1.png)
-
-!(screenshots/Screenshot-2.png)
+![Main UI](Screenshots/Screenshot-1.png)
+![Main UI](Screenshots/Screenshot-2.png)
 
 ---
 
