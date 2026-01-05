@@ -8,11 +8,9 @@
 #include <QProcess>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QDebug>
 #include <QStandardPaths>
 #include <QComboBox>
 #include <QJsonArray>
-#include <QScrollArea>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
@@ -22,35 +20,10 @@
 #include <QGraphicsOpacityEffect>
 #include <QPropertyAnimation>
 #include <QAbstractAnimation>
+#include <QUrlQuery>
 #include "ProgressRing.h"
 #include "DownloadItem.h"
 #include "DownloadItemWidget.h"
-
-QString sanitizeFileName(const QString &name) {
-    QString clean = name;
-    clean.replace(QRegularExpression(R"([<>:"/\\|?*])"), "_");
-    return clean;
-}
-
-QString generateUniqueFileName(const QString &folder, const QString &baseName)
-{
-    QDir dir(folder);
-
-    QString fileName = baseName + ".mp4";
-    int counter = 1;
-
-    while (dir.exists(fileName)) {
-        fileName = QString("%1 (%2).mp4")
-        .arg(baseName)
-            .arg(counter);
-        counter++;
-    }
-
-    if (counter > 1)
-        return QString("%1 (%2)").arg(baseName).arg(counter - 1);
-
-    return baseName;
-}
 
 QString queueFilePath() {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/queue.json";
@@ -76,7 +49,7 @@ void saveQueue(QListWidget *queue) {
     }
 }
 
-void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString saveFolder) {
+void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue) {
     QObject::connect(widget, &DownloadItemWidget::removeRequested,
                      [=](DownloadItemWidget *wItem) {
                          auto reply = QMessageBox::question(wItem, "Remove ِDownload",
@@ -158,6 +131,7 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
 
             QObject::connect(wItem->proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
                              [wItem, queue](int exitCode, QProcess::ExitStatus status) {
+                                 Q_UNUSED(status);
                                  if (exitCode == 0) {
                                      wItem->progress->setRange(0, 100);
                                      wItem->progress->setValue(100);
@@ -174,10 +148,6 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
                                  saveQueue(queue);
                              });
 
-            QString outputName = QString("%1 [%2]").arg(sanitizeFileName(wItem->dItem.Title)).arg(wItem->dItem.Resolution);
-            QString outputPath = QString("%1/%2").arg(saveFolder).arg(generateUniqueFileName(wItem->dItem.SaveFolder, outputName));
-            wItem->dItem.FullPath = outputPath + ".mp4";
-
             QString program = QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
             QStringList args;
             args << "--ffmpeg-location" << QCoreApplication::applicationDirPath()
@@ -185,7 +155,7 @@ void connectDownloadItem(DownloadItemWidget *widget, QListWidget *queue, QString
                  << "-c"
                  << "-f"  << QString("%1+%2/%1").arg(wItem->dItem.VideoFId, wItem->dItem.AudioFId)
                  << "--merge-output-format" << "mp4"
-                 << "-o" << outputPath
+                 << "-o" << wItem->dItem.FullPath
                  << wItem->dItem.Url;
 
             wItem->proc->start(program, args);
@@ -219,7 +189,7 @@ void loadQueue(QListWidget *queue) {
         DownloadItem item = DownloadItem::fromJson(v.toObject());
 
         auto *widget = new DownloadItemWidget(item);
-        connectDownloadItem(widget, queue, item.SaveFolder);
+        connectDownloadItem(widget, queue);
 
         QListWidgetItem *li = new QListWidgetItem(queue);
         li->setSizeHint(QSize(500, 90));
@@ -236,6 +206,31 @@ void loadQueue(QListWidget *queue) {
             //widget->lblThumb->setPixmap(QPixmap(":/icons/no_thumb.png"));
         }
     }
+}
+
+QString getThumbFile(QString name)
+{
+    QString clean = name;
+    clean.replace(QRegularExpression(R"([<>:"/\\|?*])"), "_");
+
+    QString thumbDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/thumbs";
+
+    QDir().mkpath(thumbDir);
+    return QString("%1/%2.jpg").arg(thumbDir, clean);
+}
+
+int extractPlaylistIndex(const QString &url)
+{
+    QUrl qurl(url);
+    QUrlQuery query(qurl);
+
+    if (query.hasQueryItem("index")) {
+        bool ok = false;
+        int index = query.queryItemValue("index").toInt(&ok);
+        if (ok && index > 0)
+            return index - 1;
+    }
+    return 0;
 }
 
 int main(int argc, char *argv[])
@@ -258,6 +253,9 @@ int main(int argc, char *argv[])
     int currentPlaylistIndex = 0;
     bool isPlaylist = false;
     QString videoUrl;
+    int currentLoadToken = 0;
+    bool isLoadingPlaylistItem = false;
+    bool isThumbnailLoaded = false;
 
     //--------------------Main Ui--------------------
 
@@ -278,9 +276,11 @@ int main(int argc, char *argv[])
     right->addLayout(clearLayout);
 
     QPushButton *btnClearAll = new QPushButton("️🗑 Clear All Downloads");
+    btnClearAll->setStyleSheet("color:#ff5555;");
     clearLayout->addWidget(btnClearAll);
 
     QPushButton *btnClearDownloaded = new QPushButton("🗑 Clear Completed Downloads");
+    btnClearDownloaded->setStyleSheet("color:#ffaa55;");
     clearLayout->addWidget(btnClearDownloaded);
     clearLayout->addStretch();
 
@@ -305,6 +305,7 @@ int main(int argc, char *argv[])
     QLabel *lblStoryboard = new QLabel("Storyboard preview");
     lblStoryboard->setAlignment(Qt::AlignCenter);
     lblStoryboard->setFixedSize(448, 252);
+    lblStoryboard->setStyleSheet("QLabel { background:#111; border-radius:8px; }");
     left->addWidget(lblStoryboard);
 
     ProgressRing *ring = new ProgressRing(lblStoryboard);
@@ -315,6 +316,7 @@ int main(int argc, char *argv[])
     //--------------------Play List Nav--------------------
 
     QHBoxLayout *playlistNav = new QHBoxLayout();
+    playlistNav->setSpacing(10);
     left->addLayout(playlistNav);
     playlistNav->addStretch();
 
@@ -324,11 +326,18 @@ int main(int argc, char *argv[])
     btnPrev->hide();
     playlistNav->addWidget(btnPrev);
 
-    QLabel *lblPlaylistIndex = new QLabel("Playlist: 0 / 0");
-    lblPlaylistIndex->setAlignment(Qt::AlignCenter);
-    lblPlaylistIndex->setMinimumWidth(60);
-    lblPlaylistIndex->hide();
-    playlistNav->addWidget(lblPlaylistIndex);
+    QComboBox *playlistCombo = new QComboBox();
+    playlistCombo->setEditable(true);
+    playlistCombo->setInsertPolicy(QComboBox::NoInsert);
+    playlistCombo->lineEdit()->setAlignment(Qt::AlignCenter);
+    playlistCombo->setFixedWidth(50);
+    playlistCombo->hide();
+    playlistNav->addWidget(playlistCombo);
+
+    QLabel *lblPlaylistTotal = new QLabel("/ 0");
+    lblPlaylistTotal->setAlignment(Qt::AlignCenter);
+    lblPlaylistTotal->hide();
+    playlistNav->addWidget(lblPlaylistTotal);
 
     QPushButton *btnNext = new QPushButton("▶");
     btnNext->setFixedSize(40, 30);
@@ -404,11 +413,20 @@ int main(int argc, char *argv[])
     auto loadPlaylistItem = [&](int index) {
         if (index < 0 || index >= playlistEntries.size())
             return;
+        if (isLoadingPlaylistItem)
+            return;
 
-        lblPlaylistIndex->setText(QString("Playlist: %1 / %2").arg(index + 1).arg(playlistEntries.size()));
-        lblPlaylistIndex->show();
+        isLoadingPlaylistItem = true;
+        isThumbnailLoaded = false;
+
+        currentLoadToken++;
+        int myToken = currentLoadToken;
+
+        lblPlaylistTotal->setText(QString(" / %1").arg(playlistEntries.size()));
+        lblPlaylistTotal->show();
         btnNext->setEnabled(false);
         btnPrev->setEnabled(false);
+        btnAdd->setEnabled(false);
 
         QJsonObject entry = playlistEntries[index].toObject();
         QString id = entry.value("id").toString();
@@ -422,7 +440,7 @@ int main(int argc, char *argv[])
         QProcess *proc = new QProcess(&w);
         proc->setProcessChannelMode(QProcess::MergedChannels);
 
-        QObject::connect(proc, &QProcess::readyReadStandardOutput, [=, &currentThumb, &realTitle, &realExt, &currentThumbPath]() {
+        QObject::connect(proc, &QProcess::readyReadStandardOutput, [=, &currentThumb, &realTitle, &realExt, &currentThumbPath, &isThumbnailLoaded, &isLoadingPlaylistItem]() {
             QByteArray output = proc->readAllStandardOutput();
             QJsonParseError err;
             QJsonDocument doc = QJsonDocument::fromJson(output, &err);
@@ -473,14 +491,11 @@ int main(int argc, char *argv[])
                         double abr = fmt.value("abr").toDouble(0.0);
 
                         if (abr > 0.1) {
-                            QString key = QString("%1-%2").arg(acodec).arg(abr);
+                            QString key = QString("%1-%2").arg(acodec, abr);
                             if (audioQualities.contains(key)) continue;
                             audioQualities.insert(key);
 
-                            QString display = QString("%1 kbps %2%3")
-                                                  .arg(abr)
-                                                  .arg(acodec)
-                                                  .arg(sizeText);
+                            QString display = QString("%1 kbps %2%3").arg(std::to_string(abr),acodec, sizeText);
 
                             audioCombo->addItem(display, format_id);
                         }
@@ -516,9 +531,15 @@ int main(int argc, char *argv[])
                 QString fileName = QFileInfo(QUrl(bestUrlThumbnails).fileName()).completeBaseName();
                 QNetworkReply *reply = networkManager->get(request);
 
-                QObject::connect(reply, &QNetworkReply::finished, [reply, lblStoryboard, realTitle,
-                                                                   &currentThumb, &currentThumbPath,
-                &btnPrev, &btnNext, &index, &playlistEntries, &ring]() {
+                int localIndex = index;
+
+                QObject::connect(reply, &QNetworkReply::finished, [=, &currentThumb, &currentThumbPath,
+                &btnPrev, &btnNext, &playlistEntries, &ring, &isThumbnailLoaded, &isLoadingPlaylistItem]() {
+                    if (myToken != currentLoadToken) {
+                        reply->deleteLater();
+                        return;
+                    }
+
                     QByteArray data = reply->readAll();
                     QPixmap pix;
                     if (!pix.loadFromData(data)) {
@@ -529,24 +550,20 @@ int main(int argc, char *argv[])
                                                             Qt::KeepAspectRatio, Qt::SmoothTransformation));
                         lblStoryboard->setToolTip(QObject::tr("Thumbnail preview of %1").arg(realTitle));
 
-
-                        QString thumbDir = QStandardPaths::writableLocation(
-                                               QStandardPaths::AppDataLocation
-                                               ) + "/thumbs";
-
-                        QDir().mkpath(thumbDir);
-
-                        QString thumbFile = thumbDir + "/" +
-                                            sanitizeFileName(realTitle) + ".jpg";
+                        QString thumbFile = getThumbFile(realTitle);
 
                         pix.save(thumbFile, "JPG");
                         currentThumbPath = thumbFile;
-
-                        btnPrev->setEnabled(index > 0);
-                        btnNext->setEnabled(index < playlistEntries.size() - 1);
-                        ring->stop();
                     }
                     reply->deleteLater();
+                    isThumbnailLoaded = true;
+                    isLoadingPlaylistItem = false;
+
+                    btnPrev->setEnabled(localIndex > 0);
+                    btnNext->setEnabled(localIndex < playlistEntries.size() - 1);
+                    btnAdd->setEnabled(true);
+
+                    ring->stop();
                 });
             }
 
@@ -611,12 +628,19 @@ int main(int argc, char *argv[])
                 if (obj.contains("entries")) {
                     isPlaylist = true;
                     playlistEntries = obj.value("entries").toArray();
-                    currentPlaylistIndex = 0;
+                    currentPlaylistIndex = extractPlaylistIndex(urlEdit->text());
+                    loadPlaylistItem(currentPlaylistIndex);
 
                     btnPrev->show();
                     btnNext->show();
 
-                    loadPlaylistItem(0);
+                    playlistCombo->clear();
+                    for (int i = 0; i < playlistEntries.size(); ++i) {
+                        playlistCombo->addItem(QString::number(i + 1));
+                    }
+                    playlistCombo->setCurrentIndex(currentPlaylistIndex);
+                    playlistCombo->show();
+
                     return;
                 } else {
                     isPlaylist = false;
@@ -667,14 +691,11 @@ int main(int argc, char *argv[])
                             double abr = fmt.value("abr").toDouble(0.0);
 
                             if (abr > 0.1) {
-                                QString key = QString("%1-%2").arg(acodec).arg(abr);
+                                QString key = QString("%1-%2").arg(acodec, abr);
                                 if (audioQualities.contains(key)) continue;
                                 audioQualities.insert(key);
 
-                                QString display = QString("%1 kbps (%2)%3")
-                                                      .arg(abr)
-                                                      .arg(acodec)
-                                                      .arg(sizeText);
+                                QString display = QString("%1 kbps (%2)%3").arg(std::to_string(abr), acodec, sizeText);
 
                                 audioCombo->addItem(display, format_id);
                             }
@@ -719,14 +740,7 @@ int main(int argc, char *argv[])
                             lblStoryboard->setPixmap(pix.scaled(lblStoryboard->size(),
                                                                 Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
-                            QString thumbDir = QStandardPaths::writableLocation(
-                                                   QStandardPaths::AppDataLocation
-                                                   ) + "/thumbs";
-
-                            QDir().mkpath(thumbDir);
-
-                            QString thumbFile = thumbDir + "/" +
-                                                sanitizeFileName(realTitle) + ".jpg";
+                            QString thumbFile = getThumbFile(realTitle);
 
                             pix.save(thumbFile, "JPG");
                             currentThumbPath = thumbFile;
@@ -778,18 +792,15 @@ int main(int argc, char *argv[])
         if (urlEdit->text().isEmpty()) return;
 
         QString resolution = videoCombo->currentText().split(" ").first();
-        QString baseName = QString("%1 [%2]").arg(sanitizeFileName(realTitle)).arg(resolution);
-        baseName = generateUniqueFileName(saveFolder, baseName);
-
         DownloadItem item;
         item.Url = isPlaylist? videoUrl : urlEdit->text();
         item.Title = realTitle;
         item.Resolution = resolution;
         item.VideoFId = videoCombo->currentData().toString();
         item.AudioFId = audioCombo->currentData().toString();
-        item.FileName = baseName;
         item.SaveFolder = saveFolder;
         item.ThumbPath = currentThumbPath;
+        item.getFullPath();
         item.hasPartialFile();
 
         resolution = videoCombo->currentText();
@@ -799,7 +810,7 @@ int main(int argc, char *argv[])
             resolution = resolution.split(" ").first();
 
         auto *widget = new DownloadItemWidget(item);
-        connectDownloadItem(widget, queue, saveFolder);
+        connectDownloadItem(widget, queue);
         widget->lblThumb->setPixmap(currentThumb.scaled(widget->lblThumb->size(),
                                                         Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
@@ -825,24 +836,27 @@ int main(int argc, char *argv[])
         isPlaylist = false;
         playlistEntries = QJsonArray();
 
-        lblPlaylistIndex->hide();
+        playlistCombo->hide();
+        lblPlaylistTotal->hide();
         btnPrev->hide();
         btnNext->hide();
     });
 
     QObject::connect(btnNext, &QPushButton::clicked, [&]() {
         if (!isPlaylist) return;
+        if (isLoadingPlaylistItem) return;
         if (currentPlaylistIndex < playlistEntries.size() - 1) {
             currentPlaylistIndex++;
-            loadPlaylistItem(currentPlaylistIndex);
+            playlistCombo->setCurrentIndex(currentPlaylistIndex);
         }
     });
 
     QObject::connect(btnPrev, &QPushButton::clicked, [&]() {
         if (!isPlaylist) return;
+        if (isLoadingPlaylistItem) return;
         if (currentPlaylistIndex > 0) {
             currentPlaylistIndex--;
-            loadPlaylistItem(currentPlaylistIndex);
+            playlistCombo->setCurrentIndex(currentPlaylistIndex);
         }
     });
 
@@ -877,6 +891,14 @@ int main(int argc, char *argv[])
             }
         }
     });
+
+    QObject::connect(playlistCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                     [&](int index) {
+                         if (index >= 0 && index < playlistEntries.size() && !isLoadingPlaylistItem) {
+                             currentPlaylistIndex = index;
+                             loadPlaylistItem(currentPlaylistIndex);
+                         }
+                     });
 
     w.show();
     return app.exec();

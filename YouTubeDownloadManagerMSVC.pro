@@ -2,6 +2,7 @@ QT += core gui widgets network
 CONFIG += c++17 thread
 
 SOURCES += main.cpp \
+    DownloadItem.cpp \
     DownloadItemWidget.cpp
 HEADERS += \
     DownloadItem.h \

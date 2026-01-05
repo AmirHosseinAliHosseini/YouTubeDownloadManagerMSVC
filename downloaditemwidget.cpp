@@ -95,9 +95,24 @@ DownloadItemWidget::DownloadItemWidget(const DownloadItem &item, QWidget *parent
         setFinished();
 
     connect(btnPlay, &QPushButton::clicked, this, [this]() {
-        if (dItem.FullPath.isEmpty()) return;
+        QString path = dItem.FullPath;
 
-        QDesktopServices::openUrl(QUrl::fromLocalFile(dItem.FullPath));
+        if (path.isEmpty()) {
+            QMessageBox::warning(this, tr("File not available"), tr("The video file path is empty."));
+            return;
+        }
+
+        if (!QFile::exists(path)) {
+            QMessageBox::critical(this, tr("File not found"),
+                tr("The downloaded file was not found.\nIt may have been moved or deleted."));
+            return;
+        }
+
+        bool ok = QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+
+        if (!ok) {
+            QMessageBox::warning(this, tr("Cannot open file"), tr("Failed to open the video with the default player."));
+        }
     });
 
     connect(btnOpenFolder, &QPushButton::clicked, this, [this]() {
@@ -148,10 +163,7 @@ void DownloadItemWidget::parseYtDlpStatus(QString &line)
 
     progress->setValue(static_cast<int>(percent));
     lblStatus->setText(QString("Downloaded(%4): %1 % \tSpeed: %2 \tETA: %3")
-                           .arg(match.captured(1))
-                           .arg(match.captured(3).replace("MiB/s"," MB/sec").replace("KiB/s"," KB/sec"))
-                           .arg(match.captured(4))
-                           .arg(currentType));
+                           .arg(match.captured(1), match.captured(3).replace("MiB/s"," MB/sec").replace("KiB/s"," KB/sec"), match.captured(4), currentType));
 
     dItem.Status = lblStatus->text();
 }
